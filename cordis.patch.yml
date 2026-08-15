@@ -1,0 +1,12 @@
+- insert:
+    - id: admin-gateway
+      name: dsh-admin-gateway
+      config:
+        port: 3081
+        upstream: 'http://127.0.0.1:3080'
+        # 管理员密码：优先取环境变量 DSH_ADMIN_PASSWORD，未设置时用此值
+        # adminPassword: 'change-me'
+        allowedHosts:
+          - dsh.example.com
+        sessionTtlMs: 43200000
+        maxBodyBytes: 5242880
