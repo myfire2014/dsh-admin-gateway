@@ -1,6 +1,6 @@
 {
   "name": "dsh-admin-gateway",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "DeepSeek Harness 管理员验证网关插件 — 自起独立 HTTP 网关，密码登录 + 反向代理 + WebSocket/SSE 透传，防止未授权访问",
   "keywords": [
     "deepseek-harness",

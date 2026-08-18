@@ -182,14 +182,15 @@ export function apply(ctx, config) {
     return String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https'
   }
 
-  function cookieHeader(token, maxAgeSec) {
+  function cookieHeader(token, maxAgeSec, secure = false) {
     const parts = [
       `${config.cookieName}=${token}`,
       'Path=/',
       'HttpOnly',
-      'SameSite=Strict',
+      'SameSite=Lax',
       `Max-Age=${maxAgeSec}`,
     ]
+    if (secure) parts.push('Secure')
     return parts.join('; ')
   }
 
@@ -197,6 +198,28 @@ export function apply(ctx, config) {
     res.setHeader('X-Frame-Options', 'DENY')
     res.setHeader('X-Content-Type-Options', 'nosniff')
     res.setHeader('Referrer-Policy', 'no-referrer')
+  }
+
+  // 是否为 SSE / 事件流请求（浏览器 EventSource 发起的 GET）
+  function isEventStreamRequest(req) {
+    const accept = req.headers.accept || ''
+    if (accept.includes('text/event-stream')) return true
+    const p = (req.url || '/').split('?')[0]
+    // dsh 的 SSE 端点：/plugins/events、/api/events.*
+    return /^\/plugins\/events(\/|$)/.test(p) || /^\/api\/events\./.test(p)
+  }
+
+  // 回显请求来源以应对 CORS（携带凭证时必须回显具体 origin，不能用 *）
+  function sendCorsHeaders(res, req) {
+    const origin = req.headers.origin
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Access-Control-Allow-Credentials', 'true')
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
   }
 
   function sendJson(res, status, obj) {
@@ -284,11 +307,11 @@ export function apply(ctx, config) {
         const token = makeToken()
         sessions.set(token, { expiresAt: Date.now() + config.sessionTtlMs })
         const maxAge = Math.floor(config.sessionTtlMs / 1000)
-        const secure = isSecure(req) ? '; Secure' : ''
+        const secure = isSecure(req)
         sendSecurityHeaders(res)
         res.writeHead(302, {
           Location: '/',
-          'Set-Cookie': cookieHeader(token, maxAge) + secure,
+          'Set-Cookie': cookieHeader(token, maxAge, secure),
           'Cache-Control': 'no-store',
         })
         res.end()
@@ -305,7 +328,7 @@ export function apply(ctx, config) {
     sendSecurityHeaders(res)
     res.writeHead(302, {
       Location: LOGIN_PATH,
-      'Set-Cookie': `${config.cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
+      'Set-Cookie': `${config.cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
     })
     res.end()
   }
@@ -408,10 +431,32 @@ export function apply(ctx, config) {
     const path = url.split('?')[0]
     const ip = clientIp(req)
 
+    // CORS 预检（OPTIONS）：直接回 204 + CORS 头，不进入鉴权/代理
+    if (req.method === 'OPTIONS') {
+      sendCorsHeaders(res, req)
+      res.writeHead(204)
+      res.end()
+      return
+    }
+
     // 健康检查（无鉴权）
     if (path === HEALTH_PATH) {
       sendJson(res, 200, { ok: true })
       return
+    }
+
+    // 强制 https：非安全连接（如直接 http 访问 / Cloudflare 未升级）301 跳转到 https，
+    // 避免页面以 http 源加载导致 SameSite/跨协议 cookie 不被发送、SSE 被 302 到登录页。
+    // 仅对公网主机生效；本机 127.0.0.1/localhost 调试不跳转，避免死循环。
+    if (!isSecure(req)) {
+      const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0].toLowerCase()
+      const isLocal = host === '127.0.0.1' || host === 'localhost' || host === ''
+      if (!isLocal) {
+        const fwdHost = req.headers['x-forwarded-host'] || req.headers.host || `${config.host}:${config.port}`
+        res.writeHead(301, { Location: `https://${fwdHost}${url}`, 'Cache-Control': 'no-store' })
+        res.end()
+        return
+      }
     }
 
     // 基础防护：Host 校验 + IP 白名单 + 请求限速
@@ -443,7 +488,20 @@ export function apply(ctx, config) {
     if (!sessionValid(token)) {
       const accept = req.headers.accept || ''
       if (path.startsWith('/api') || accept.includes('application/json')) {
+        sendCorsHeaders(res, req)
         sendJson(res, 401, { error: 'unauthorized', loginUrl: LOGIN_PATH })
+        return
+      }
+      // 事件流（SSE）未认证：返回 401 + CORS 头，浏览器才不会把登录页当 SSE 解析
+      // （302 到登录页会被 EventSource 当作非法 text/event-stream 帧 → ERR_INCOMPLETE_CHUNKED_ENCODING）
+      if (isEventStreamRequest(req)) {
+        sendCorsHeaders(res, req)
+        sendSecurityHeaders(res)
+        res.writeHead(401, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        })
+        res.end(JSON.stringify({ error: 'unauthorized', loginUrl: LOGIN_PATH }))
         return
       }
       sendSecurityHeaders(res)
