@@ -381,10 +381,14 @@ export function apply(ctx, config) {
     })
     preq.on('upgrade', (pres, psocket) => {
       if (head && head.length) psocket.write(head)
+      // ⚠️ 101 升级响应必须原样保留 Connection: Upgrade / Upgrade: websocket 头（RFC 6455）。
+      // 不能套用 HOP_BY_HOP 过滤（那只适用于普通响应）：
+      // 缺失 Upgrade 头时浏览器宽容能连，但 cloudflared 等严格代理会报
+      // "internal error: unsupported connection type" 并立即掐死连接（WS 全断）。
       socket.write(
         `HTTP/1.1 101 Switching Protocols\r\n` +
           Object.entries(pres.headers)
-            .filter(([k]) => !HOP_BY_HOP.has(k.toLowerCase()))
+            .filter(([k]) => k.toLowerCase() !== 'transfer-encoding')
             .map(([k, v]) => `${k}: ${v}\r\n`)
             .join('') +
           '\r\n',
