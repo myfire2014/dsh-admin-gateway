@@ -6,7 +6,7 @@
         upstream: 'http://127.0.0.1:3080'
         # 管理员密码：优先取环境变量 DSH_ADMIN_PASSWORD，未设置时用此值
         # adminPassword: 'change-me'
-        # 真实部署域名（如 dsh.example.com）填这里；发布到 npm 前必须改回 dsh.example.com（脱敏红线）
+        # 发布到 npm 前必须把 allowedHosts 改回占位域名 dsh.example.com（脱敏红线）
         allowedHosts:
           - dsh.example.com
         sessionTtlMs: 43200000
